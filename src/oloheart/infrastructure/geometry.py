@@ -49,6 +49,11 @@ class AnatomicalMesh:
     view: str = "all"
     motion: str = "none"
     opacity: float = 1.0
+    element_key: str = ""
+    element_name: str = ""
+    deformation_center: Vec3 | None = None
+    valve_center: Vec3 | None = None
+    valve_radius: float = 0.0
 
 
 def _hex(value: str) -> tuple[int, int, int]:
@@ -221,15 +226,26 @@ def _tube(part: HeartPartId, points: list[Vec3], radius: float, colors: tuple[st
           explosion: Vec3, sides: int = 7, tissue: bool = False,
           default_visible: bool = True, curve_steps: int = 1,
           taper: float = 0.0) -> AnatomicalMesh:
-    sides = max(5, min(sides, 16))
+    sides = max(5, min(sides, 48))
     points = _curve_points(points, curve_steps)
     vertices: list[Vec3] = []
+    transported_normal: Vec3 | None = None
     for index, point in enumerate(points):
         previous = points[max(0, index - 1)]
         following = points[min(len(points) - 1, index + 1)]
         tangent = (following - previous).normalized()
         helper = Vec3(0.0, 1.0, 0.0) if abs(tangent.y) < 0.84 else Vec3(1.0, 0.0, 0.0)
-        normal = tangent.cross(helper).normalized()
+        if transported_normal is None:
+            normal = tangent.cross(helper).normalized()
+        else:
+            # Parallel transport prevents frame flips and twisted tube seams
+            # where a curved vessel changes from vertical to horizontal.
+            dot = (transported_normal.x * tangent.x + transported_normal.y * tangent.y
+                   + transported_normal.z * tangent.z)
+            normal = (transported_normal - tangent * dot).normalized()
+            if normal.length() < 0.5:
+                normal = tangent.cross(helper).normalized()
+        transported_normal = normal
         binormal = tangent.cross(normal).normalized()
         local_radius = radius * (1.0 - max(0.0, min(0.75, taper))
                                  * index / max(1, len(points) - 1))
@@ -279,7 +295,7 @@ def _torus(part: HeartPartId, center: Vec3, major: float, minor: float,
                           default_visible)
 
 
-def build_heart_geometry() -> tuple[AnatomicalMesh, ...]:
+def _build_legacy_heart_geometry() -> tuple[AnatomicalMesh, ...]:
     """Build independently selectable meshes for all catalog structures."""
 
     i = HeartPartId
@@ -444,3 +460,10 @@ def build_heart_geometry() -> tuple[AnatomicalMesh, ...]:
     from oloheart.infrastructure.sculpted_geometry import refine_anatomy
 
     return refine_anatomy(tuple(meshes))
+
+
+def build_heart_geometry() -> tuple[AnatomicalMesh, ...]:
+    """Build the current anatomical atlas; legacy primitives remain reusable."""
+    from oloheart.infrastructure.cardiac_atlas import build_cardiac_atlas
+
+    return build_cardiac_atlas()

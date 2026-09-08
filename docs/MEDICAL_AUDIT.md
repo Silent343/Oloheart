@@ -3,6 +3,52 @@
 This audit describes the educational normal-heart model implemented in OloHeart.
 It is not a clinical validation and does not make OloHeart a medical device.
 
+## September 2026 atlas revision
+
+The active adapter now distinguishes 72 named elements within the existing 24
+catalog categories. A common ventricular exterior replaces two separate conical
+silhouettes. Exterior myocardial/epicardial layers follow that contour. The internal
+walls retain explicit thickness and cut edges; vessel windows use shared clipping
+intersections rather than removing whole triangles along a jagged boundary.
+
+The revised AV valve geometry uses an oblique plane and separate cusp meshes.
+Chordal fans have their own selection keys and animated attachments; they are not
+part of the papillary muscles' drag identity. Ventricular wall detail, coronary
+surfaces and the ventricular conduction overlay use a common deformation origin.
+The circumflex is routed along the AV groove rather than as another apical vessel.
+
+The directional blood display contains 17 paths with phase-gated markers. It
+distinguishes lower-oxygen caval/right-heart/pulmonary-arterial routes from
+higher-oxygen pulmonary-venous/left-heart/aortic routes. AV and semilunar paths
+stop advancing during their closed phase. No route connects the adult atria across
+the septum. Separation or manual displacement hides the connected-flow display.
+
+References consulted for this revision:
+
+- [OpenStax / Rice University, Heart Anatomy (2e)](https://openstax.org/books/anatomy-and-physiology-2e/pages/19-1-heart-anatomy)
+- [OpenStax / Rice University, Cardiac Cycle (2e)](https://openstax.org/books/anatomy-and-physiology-2e/pages/19-3-cardiac-cycle)
+- [NHLBI, How Blood Flows through the Heart](https://www.nhlbi.nih.gov/health/heart/blood-flow)
+
+The supplied reference images informed the visual comparison. The linked Google
+Books preview could not be opened, so the book's full contents were not verified.
+The model is not a reproduction of a supplied Sketchfab mesh or a downloaded scan.
+
+### What these checks do not validate
+
+The flow particles are explanatory markers, not individual tracked blood cells,
+measured flow rates, or a conserved volume calculation. Outside-heart lung/body
+geometry, chamber pressures, valve-contact mechanics and patient-specific strain
+are absent. Visual vessel junctions do not constitute one watertight fluid domain.
+Valve pockets, the fibrous skeleton, microscopic vessels and pericardial reflections
+remain simplified. Atrial/ventricular deformation and conduction are illustrative,
+not a validated electrophysiology or finite-element simulation.
+
+Automated checks cover component ownership, exact GPU picking, unchanged adjacent
+fragment placement, section topology, valve cusp counts, phase-gated clocks, and
+visible leaflet opening/closure. They are software acceptance checks, not a
+cardiologist's clinical certification. Live hand tracking is not used by the visual
+acceptance scripts and must still be assessed with the user's camera and lighting.
+
 ## Geometry and interaction revision
 
 The earlier audit verified catalog coverage and phase logic, but did not adequately

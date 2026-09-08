@@ -34,6 +34,7 @@ from oloheart.application.controller import (
 )
 from oloheart.domain.model import (
     AnatomySystem,
+    AnatomicalElement,
     HandObservation,
     HeartPart,
     HeartPartId,
@@ -248,6 +249,8 @@ class QtDesktopApplication(QMainWindow):
             self._toggle_spatial_mode()
         elif key == Qt.Key.Key_I:
             self._toggle_interior()
+        elif key == Qt.Key.Key_F:
+            self._toggle_flow()
         elif key == Qt.Key.Key_Home:
             self._reset_view()
         else:
@@ -275,6 +278,11 @@ class QtDesktopApplication(QMainWindow):
         brand_box.addWidget(brand)
         brand_box.addWidget(subtitle)
         header_layout.addLayout(brand_box)
+        self.flow_button = QPushButton("FLUJO · F")
+        self.flow_button.setCheckable(True)
+        self.flow_button.setToolTip("Flujo sanguíneo · índice y meñique levantados")
+        self.flow_button.clicked.connect(self._toggle_flow)
+        header_layout.addWidget(self.flow_button)
         header_layout.addStretch(1)
         self.mode_label = QLabel("TEJIDO ANATÓMICO · ILUMINACIÓN PBR")
         self.mode_label.setObjectName("section")
@@ -370,7 +378,7 @@ class QtDesktopApplication(QMainWindow):
         self.part_list.itemClicked.connect(self._select_list_item)
         layout.addWidget(self.part_list, 1)
         help_label = QLabel(
-            "MANO ABIERTA  ROTAR\nDOS MANOS  ZOOM\nÍNDICE  SELECCIONAR\nPINZA  MOVER FRAGMENTO\nPULGAR ABAJO  VISTA INTERIOR"
+            "MANO ABIERTA  ROTAR\nDOS MANOS  ZOOM\nÍNDICE  SELECCIONAR\nPINZA  MOVER FRAGMENTO\nPULGAR ABAJO  INTERIOR\nÍNDICE + MEÑIQUE  FLUJO"
         )
         help_label.setObjectName("eyebrow")
         help_label.setWordWrap(True)
@@ -519,6 +527,8 @@ class QtDesktopApplication(QMainWindow):
         )
         signature = (
             snapshot.selected_part,
+            snapshot.selected_element,
+            snapshot.flow_enabled,
             snapshot.realistic,
             snapshot.spatial_mode,
             snapshot.interior_view,
@@ -576,10 +586,12 @@ class QtDesktopApplication(QMainWindow):
             self._flash("VISTA ESPACIAL A PANTALLA COMPLETA")
         elif result.action == InteractionAction.INTERIOR_VIEW_CHANGED:
             self._flash("CORTE ANATÓMICO" if self.controller.snapshot().interior_view else "SUPERFICIE EXTERIOR")
+        elif result.action == InteractionAction.FLOW_CHANGED:
+            self._flash("FLUJO SANGUÍNEO " + ("ACTIVO" if self.controller.snapshot().flow_enabled else "OCULTO"))
         elif result.action == InteractionAction.FOCUS_WHOLE:
             self._flash("CORAZÓN COMPLETO RESTAURADO")
 
-    def _pick_from_normalized(self, x: float, y: float) -> HeartPartId | None:
+    def _pick_from_normalized(self, x: float, y: float) -> AnatomicalElement | None:
         origin = self.renderer.mapTo(self, QPoint(0, 0))
         local_x = x * self.width() - origin.x()
         local_y = y * self.height() - origin.y()
@@ -606,7 +618,7 @@ class QtDesktopApplication(QMainWindow):
             widget = widget.parentWidget()
         self._activate_part(self._pick_from_normalized(x, y))
 
-    def _activate_part(self, identifier: HeartPartId | None) -> None:
+    def _activate_part(self, identifier: HeartPartId | AnatomicalElement | None) -> None:
         if identifier is None:
             if self.controller.snapshot().selected_part is not None:
                 self.controller.focus_whole_heart()
@@ -616,7 +628,7 @@ class QtDesktopApplication(QMainWindow):
         part = self.controller.part(identifier)
         self._flash("ESTRUCTURA SELECCIONADA · " + (part.display_name.upper() if part else ""))
 
-    def _begin_fragment(self, identifier: HeartPartId) -> None:
+    def _begin_fragment(self, identifier: HeartPartId | AnatomicalElement) -> None:
         if self.controller.begin_fragment_drag(identifier):
             part = self.controller.part(identifier)
             self._flash("FRAGMENTO TOMADO · " + (part.display_name.upper() if part else ""))
@@ -636,6 +648,7 @@ class QtDesktopApplication(QMainWindow):
         self._activate_part(HeartPartId(item.data(Qt.ItemDataRole.UserRole)))
 
     def _update_interface(self, snapshot: HeartSnapshot) -> None:
+        self.flow_button.setChecked(snapshot.flow_enabled)
         self.explosion_button.setChecked(snapshot.explosion >= 0.45)
         self.realism_button.setChecked(snapshot.realistic)
         self.spatial_button.setChecked(snapshot.spatial_mode)
@@ -648,7 +661,7 @@ class QtDesktopApplication(QMainWindow):
         self.header.setVisible(not snapshot.spatial_mode)
         self.footer.setVisible(not snapshot.spatial_mode)
         self.control_bar.setVisible(not snapshot.spatial_mode)
-        part = self.controller.part(snapshot.selected_part)
+        part = self.controller.part(snapshot.selected_element or snapshot.selected_part)
         self._show_part(part)
         self.renderer.set_callout(part)
         self.right_panel.setVisible(part is not None or not snapshot.spatial_mode)
@@ -667,7 +680,7 @@ class QtDesktopApplication(QMainWindow):
                     break
 
     def _show_part(self, part: HeartPart | None) -> None:
-        identifier = part.identifier if part else None
+        identifier = (part.identifier, part.display_name) if part else None
         if getattr(self, "_inspected_part", None) != identifier:
             self.info_scroll.verticalScrollBar().setValue(0)
         self._inspected_part = identifier
@@ -752,6 +765,10 @@ class QtDesktopApplication(QMainWindow):
     def _toggle_interior(self) -> None:
         self.controller.toggle_interior_view()
         self._flash("CORTE ANATÓMICO" if self.controller.snapshot().interior_view else "SUPERFICIE EXTERIOR")
+
+    def _toggle_flow(self) -> None:
+        self.controller.toggle_blood_flow()
+        self._flash("FLUJO SANGUÍNEO " + ("ACTIVO" if self.controller.snapshot().flow_enabled else "OCULTO"))
 
     def _toggle_realism(self) -> None:
         self.controller.toggle_realistic_heartbeat()

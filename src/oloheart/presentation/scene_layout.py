@@ -17,14 +17,22 @@ def visible_mesh(mesh, snapshot: HeartSnapshot) -> bool:
     if mesh.view == "exterior" and snapshot.interior_view:
         return False
     if mesh.part_id == HeartPartId.EPICARDIUM:
-        return snapshot.selected_part == HeartPartId.EPICARDIUM
+        return (snapshot.selected_part == HeartPartId.EPICARDIUM and
+                (snapshot.selected_element is None or
+                 snapshot.selected_element.key == getattr(mesh,"element_key","")))
+    if mesh.part_id == HeartPartId.ENDOCARDIUM:
+        return (snapshot.selected_part == HeartPartId.ENDOCARDIUM and
+                (snapshot.selected_element is None or
+                 snapshot.selected_element.key == getattr(mesh,"element_key","")))
     if mesh.part_id == HeartPartId.MYOCARDIUM:
-        return (snapshot.selected_part == HeartPartId.MYOCARDIUM
+        return ((snapshot.selected_part == HeartPartId.MYOCARDIUM and
+                 (snapshot.selected_element is None or snapshot.selected_element.key == mesh.element_key))
                 or AnatomySystem.CHAMBERS_AND_SEPTA not in snapshot.visible_systems)
     if (snapshot.selected_part == HeartPartId.MYOCARDIUM
             and mesh.part_id in {HeartPartId.LEFT_VENTRICLE, HeartPartId.RIGHT_VENTRICLE}
             and mesh.view != "all"):
-        return False
+        if snapshot.selected_element is None or snapshot.selected_element.key == f"myocardium_{mesh.part_id.value}":
+            return False
     return (mesh.default_visible or snapshot.interior_view or snapshot.explosion > 0.035
             or snapshot.selected_part == mesh.part_id)
 
@@ -42,11 +50,11 @@ def scene_rotation(snapshot: HeartSnapshot) -> np.ndarray:
 
 
 def placement_matrix(snapshot: HeartSnapshot, explosion, part: HeartPartId,
-                     scale: float) -> np.ndarray:
+                     scale: float, element_key: str = "") -> np.ndarray:
     """Selection never changes position, scale, rotation, or explosion offsets."""
     shift = np.asarray(explosion, dtype=np.float32) * snapshot.explosion * 0.78
     for offset in snapshot.fragment_offsets:
-        if offset.part_id == part:
+        if offset.part_id == part and offset.element_key == element_key:
             shift += np.asarray((offset.horizontal * 4, -offset.vertical * 4,
                                  offset.depth * 3), dtype=np.float32)
             break

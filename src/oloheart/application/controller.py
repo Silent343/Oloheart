@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Protocol
 
 from oloheart.domain.model import (
     AnatomySystem,
+    AnatomicalElement,
     GestureKind,
     HandObservation,
     HeartExperience,
@@ -39,6 +40,7 @@ class InteractionAction(StrEnum):
     REALISM_CHANGED = "realism_changed"
     SPATIAL_MODE_CHANGED = "spatial_mode_changed"
     INTERIOR_VIEW_CHANGED = "interior_view_changed"
+    FLOW_CHANGED = "flow_changed"
     FRAGMENT_GRAB_STARTED = "fragment_grab_started"
     FRAGMENT_GRAB_MOVED = "fragment_grab_moved"
     FRAGMENT_GRAB_ENDED = "fragment_grab_ended"
@@ -66,13 +68,18 @@ class HeartController:
     def catalog(self) -> tuple[HeartPart, ...]:
         return self._catalog
 
-    def part(self, identifier: HeartPartId | None) -> HeartPart | None:
+    def part(self, identifier: HeartPartId | AnatomicalElement | None) -> HeartPart | None:
+        if isinstance(identifier, AnatomicalElement):
+            part = self._parts_by_id.get(identifier.part_id)
+            return replace(part, display_name=identifier.name) if part and identifier.name else part
         return self._parts_by_id.get(identifier) if identifier else None
 
-    def select_part(self, identifier: HeartPartId) -> None:
-        if identifier not in self._parts_by_id:
+    def select_part(self, identifier: HeartPartId | AnatomicalElement) -> None:
+        element = identifier if isinstance(identifier, AnatomicalElement) else None
+        part = element.part_id if element else identifier
+        if part not in self._parts_by_id:
             raise ValueError(f"Unknown heart part: {identifier}")
-        self._heart.select(identifier)
+        self._heart.select(part, element)
 
     def focus_whole_heart(self) -> None:
         self._heart.focus_whole_heart()
@@ -86,10 +93,12 @@ class HeartController:
     def toggle_explosion(self) -> None:
         self._heart.toggle_explosion()
 
-    def begin_fragment_drag(self, identifier: HeartPartId) -> bool:
-        if identifier not in self._parts_by_id:
+    def begin_fragment_drag(self, identifier: HeartPartId | AnatomicalElement) -> bool:
+        element = identifier if isinstance(identifier, AnatomicalElement) else None
+        part = element.part_id if element else identifier
+        if part not in self._parts_by_id:
             raise ValueError(f"Unknown heart part: {identifier}")
-        return self._heart.begin_fragment_drag(identifier)
+        return self._heart.begin_fragment_drag(part, element)
 
     def move_grabbed_fragment(self, horizontal: float, vertical: float, depth: float) -> bool:
         return self._heart.move_grabbed_fragment(horizontal, vertical, depth)
@@ -105,6 +114,9 @@ class HeartController:
 
     def toggle_interior_view(self) -> None:
         self._heart.toggle_interior_view()
+
+    def toggle_blood_flow(self) -> None:
+        self._heart.toggle_blood_flow()
 
     def toggle_system(self, system: AnatomySystem) -> None:
         self._heart.toggle_system(system)
@@ -204,6 +216,9 @@ class GestureCoordinator:
         elif observation.gesture == GestureKind.PINKY:
             self._controller.toggle_spatial_mode()
             action = InteractionAction.SPATIAL_MODE_CHANGED
+        elif observation.gesture == GestureKind.FLOW:
+            self._controller.toggle_blood_flow()
+            action = InteractionAction.FLOW_CHANGED
         elif observation.gesture == GestureKind.THUMB_DOWN:
             self._controller.toggle_interior_view()
             action = InteractionAction.INTERIOR_VIEW_CHANGED

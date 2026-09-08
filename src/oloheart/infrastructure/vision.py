@@ -166,6 +166,8 @@ class MediaPipeHandTracker:
             return GestureKind.OPEN_PALM, 0.92
         if index and middle and ring and not pinky:
             return GestureKind.THREE_FINGERS, 0.94
+        if index and pinky and not middle and not ring:
+            return GestureKind.FLOW, 0.93
         if pinky and not index and not middle and not ring:
             return GestureKind.PINKY, 0.93
         if index and middle and not ring and not pinky:

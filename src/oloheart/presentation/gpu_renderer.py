@@ -71,12 +71,14 @@ from OpenGL.GL import (
 from OpenGL.GL.shaders import compileProgram, compileShader
 from OpenGL.GL import GL_FRAGMENT_SHADER, GL_VERTEX_SHADER
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QWheelEvent
+from PySide6.QtGui import QColor, QFontMetrics, QMouseEvent, QPainter, QPen, QWheelEvent
 from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QWidget
 
 from oloheart.domain.model import (
+    AnatomicalElement,
+    AnatomySystem,
     CardiacPhase,
     HandObservation,
     HeartPart,
@@ -86,6 +88,8 @@ from oloheart.domain.model import (
 )
 from oloheart.infrastructure.geometry import AnatomicalMesh
 from oloheart.presentation.scene_layout import placement_matrix, visible_mesh
+from oloheart.presentation.flow_renderer import BloodFlowRenderer
+from oloheart.infrastructure.circulation_geometry import circulation_visible
 
 
 VERTEX_SHADER = """
@@ -101,6 +105,8 @@ uniform float uVentricularContraction;
 uniform float uContractileGroup;
 uniform float uIsTissue;
 uniform vec3 uMeshCenter;
+uniform vec3 uDeformCenter;
+uniform vec3 uValveCenter;
 uniform float uValveMode;
 uniform float uValveOpen;
 uniform float uValveRadius;
@@ -113,19 +119,29 @@ out vec3 vObjectNormal;
 void main() {
     vec3 position = aPosition;
     vec3 objectNormal = aNormal;
+    float chordalAttachment = 0.0;
     if (uValveMode > 0.5) {
-        vec2 radial = position.xz - uMeshCenter.xz;
+        float tilt = uValveMode < 1.5 || uValveMode > 2.5 ? 0.48 : 0.0;
+        float c = cos(tilt), s = sin(tilt);
+        vec3 p = position-uValveCenter;
+        p = vec3(p.x,p.y*c+p.z*s,-p.y*s+p.z*c);
+        vec2 radial = p.xz;
         float radius = max(length(radial), 0.0001);
         float hinge = clamp(1.0 - radius / uValveRadius, 0.0, 1.0);
-        position.xz += radial / radius * hinge * uValveRadius * 0.88 * uValveOpen;
-        position.y -= hinge * uValveOpen * (uValveMode < 1.5 ? 0.16 : -0.09);
+        float attachment = uValveMode > 2.5
+            ? smoothstep(-0.44, -0.045, p.y) : 1.0;
+        chordalAttachment = uValveMode > 2.5 ? attachment : 0.0;
+        p.xz += radial / radius * hinge * uValveRadius * 0.86 * uValveOpen * attachment;
+        p.y -= hinge * uValveOpen * (uValveMode < 1.5 || uValveMode > 2.5 ? 0.14 : -0.10) * attachment;
+        position = uValveCenter+vec3(p.x,p.y*c-p.z*s,p.y*s+p.z*c);
     }
-    if (uIsTissue > 0.5 && uContractileGroup > 0.5) {
+    if ((uIsTissue > 0.5 || uValveMode > 2.5 || uContractileGroup > 2.5) && uContractileGroup > 0.5) {
         float contraction = uContractileGroup < 1.5
             ? uAtrialContraction * 0.025
-            : uVentricularContraction * 0.048;
-        vec3 deformation = vec3(1.0 - contraction, 1.0 - contraction * 0.32, 1.0 - contraction);
-        position = uMeshCenter + (position - uMeshCenter) * deformation;
+            : uVentricularContraction * 0.10;
+        contraction *= 1.0-chordalAttachment;
+        vec3 deformation = vec3(1.0 - contraction, 1.0 - contraction * 0.55, 1.0 - contraction);
+        position = uDeformCenter + (position - uDeformCenter) * deformation;
         objectNormal = normalize(aNormal / deformation);
     }
     vec4 world = uModel * vec4(position, 1.0);
@@ -160,9 +176,24 @@ uniform float uActivation;
 uniform float uCycleProgress;
 uniform float uSectionSurface;
 uniform float uConduction;
+uniform float uConductionArrival;
 uniform int uPicking;
 
 out vec4 fragmentColor;
+
+float hash31(vec3 p) {
+    p=fract(p*0.1031);
+    p+=dot(p,p.yzx+33.33);
+    return fract((p.x+p.y)*p.z);
+}
+float tissueNoise(vec3 p) {
+    vec3 i=floor(p), f=fract(p);
+    f=f*f*(3.0-2.0*f);
+    return mix(mix(mix(hash31(i),hash31(i+vec3(1,0,0)),f.x),
+                   mix(hash31(i+vec3(0,1,0)),hash31(i+vec3(1,1,0)),f.x),f.y),
+               mix(mix(hash31(i+vec3(0,0,1)),hash31(i+vec3(1,0,1)),f.x),
+                   mix(hash31(i+vec3(0,1,1)),hash31(i+vec3(1,1,1)),f.x),f.y),f.z);
+}
 
 void main() {
     if (uSectionSurface > 0.5 && vObjectPosition.z > 0.035) {
@@ -173,13 +204,16 @@ void main() {
         return;
     }
 
-    float grainA = sin(vObjectPosition.y * 67.0 + vObjectPosition.z * 29.0);
-    float grainB = sin(vObjectPosition.z * 61.0 - vObjectPosition.x * 31.0);
-    float grainC = sin(vObjectPosition.x * 59.0 + vObjectPosition.y * 23.0);
+    float organic = uIsTissue > 0.5 ? tissueNoise(vObjectPosition*17.0) : 0.5;
+    float pores = uIsTissue > 0.5 ? hash31(floor(vObjectPosition*150.0)) : 0.5;
+    float fiberAngle = atan(vObjectPosition.z, vObjectPosition.x-0.15);
+    float grainA = sin(vObjectPosition.y*128.0 + fiberAngle*24.0 + organic*7.0);
+    float grainB = sin(vObjectPosition.y*91.0 - fiberAngle*19.0 + organic*9.0);
+    float grainC = (pores-0.5)*2.0;
     vec3 normal = normalize(gl_FrontFacing ? vNormal : -vNormal);
     if (uIsTissue > 0.5) {
         vec3 microNormal = vec3(grainA, grainB, grainC);
-        normal = normalize(normal + microNormal * 0.038);
+        normal = normalize(normal + microNormal * 0.026);
     }
     vec3 viewDirection = normalize(uCameraPosition - vWorldPosition);
     vec3 keyDirection = normalize(vec3(-0.48, 0.72, 1.15));
@@ -196,7 +230,7 @@ void main() {
 
     float fiber = (grainA + grainB) * 0.5;
     float cellular = grainB * grainC * 0.5;
-    float tissueVariation = uIsTissue > 0.5 ? 1.0 + fiber * 0.042 + cellular * 0.12 : 1.0;
+    float tissueVariation = uIsTissue > 0.5 ? 0.91 + organic*0.16 + fiber*0.028 + cellular*0.05 : 1.0;
     vec3 base = uBaseColor * tissueVariation;
     vec3 radial = normalize(vec3(
         vObjectPosition.x - uMeshCenter.x,
@@ -214,16 +248,14 @@ void main() {
     float anatomicalGroove = max(interventricularGroove, atrioventricularGroove);
     base *= 1.0 - anatomicalGroove * uIsTissue * 0.17;
 
-    vec3 diffuse = base * (0.19 + key * 0.86 + fill * 0.30 + rear * 0.09);
-    vec3 wetHighlight = vec3(1.0, 0.66, 0.61) * specular * (0.11 + uSheen * 0.28);
+    vec3 diffuse = base * (0.20 + key * 0.91 + fill * 0.35 + rear * 0.10);
+    vec3 wetHighlight = vec3(1.0, 0.81, 0.74) * specular * (0.16 + uSheen * 0.43);
     vec3 subsurface = mix(base, vec3(0.34, 0.025, 0.018), 0.54)
                       * fresnel * (0.08 + uSheen * 0.17);
     vec3 color = diffuse + wetHighlight + subsurface;
     color += base * uActivation * 0.38;
     if (uConduction > 0.5) {
-        float arrival = vObjectPosition.y > 0.52 ? 0.025
-                      : (vObjectPosition.y > 0.30 ? 0.085
-                      : (vObjectPosition.y > 0.0 ? 0.12 : 0.16));
+        float arrival = uConductionArrival + clamp(0.45-vObjectPosition.y,0.0,1.6)*0.018;
         float pulse = exp(-pow((uCycleProgress - arrival) / 0.025, 2.0));
         color += vec3(0.40, 0.78, 0.42) * pulse;
     }
@@ -258,6 +290,11 @@ class _GpuMesh:
     view: str
     motion: str
     opacity: float
+    element_key: str
+    element_name: str
+    deformation_center: np.ndarray
+    valve_center: np.ndarray
+    valve_radius: float
 
 
 def _identity() -> np.ndarray:
@@ -383,12 +420,16 @@ class GpuHeartWidget(QOpenGLWidget):
         self._inspector: QWidget | None = None
         self._last_leader_anchor: QPointF | None = None
         self._last_leader_update = 0.0
+        self._flow_overlay_state = None
         self._paint_frames = 0
         self._paint_sample_at = time.perf_counter()
         self._render_fps = 0.0
-        ordered_parts = tuple(dict.fromkeys(mesh.part_id for mesh in meshes))
-        self._pick_id_by_part = {part: index + 1 for index, part in enumerate(ordered_parts)}
-        self._part_by_pick_id = {value: key for key, value in self._pick_id_by_part.items()}
+        elements = {mesh.element_key or mesh.part_id.value:
+                    AnatomicalElement(mesh.part_id,mesh.element_key or mesh.part_id.value,mesh.element_name)
+                    for mesh in meshes}
+        self._pick_id_by_element = {key:index+1 for index,key in enumerate(elements)}
+        self._element_by_pick_id = {self._pick_id_by_element[key]:element for key,element in elements.items()}
+        self._flow_renderer = BloodFlowRenderer()
         self._overlay = _GpuOverlay(self)
         self._overlay.setGeometry(self.rect())
         self._overlay.raise_()
@@ -401,6 +442,10 @@ class GpuHeartWidget(QOpenGLWidget):
         previous = self._last_leader_anchor
         self._snapshot = snapshot
         self.update()
+        status = (snapshot.flow_enabled,circulation_visible(snapshot),snapshot.beating)
+        if status != self._flow_overlay_state:
+            self._flow_overlay_state = status
+            self._overlay.update(8,8,650,75)
         if self._callout is not None:
             current = self._selected_anchor()
             moved = ((previous is None) != (current is None)
@@ -423,7 +468,7 @@ class GpuHeartWidget(QOpenGLWidget):
         card = QRectF(self._inspector.geometry())
         end = QPointF(card.left(), max(card.top() + 28.0,
                       min(card.bottom() - 28.0, anchor.y() - 48.0)))
-        return QRectF(anchor, end).normalized().adjusted(-36.0, -10.0, 10.0, 10.0)
+        return QRectF(anchor, end).normalized().adjusted(-340.0, -52.0, 340.0, 12.0)
 
     def set_hand_overlay(
         self,
@@ -494,6 +539,7 @@ class GpuHeartWidget(QOpenGLWidget):
             "uValveMode", "uValveOpen", "uValveRadius",
             "uSectionSurface",
             "uConduction",
+            "uDeformCenter", "uValveCenter", "uConductionArrival",
         )
         self._uniforms = {
             name: glGetUniformLocation(self._program, name) for name in uniform_names
@@ -507,6 +553,7 @@ class GpuHeartWidget(QOpenGLWidget):
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         self._upload_meshes()
+        self._flow_renderer.initialize()
 
     def resizeGL(self, width: int, height: int) -> None:  # noqa: N802 - Qt callback name
         ratio = self.devicePixelRatioF()
@@ -521,6 +568,8 @@ class GpuHeartWidget(QOpenGLWidget):
         if self._program and self._snapshot is not None:
             glUseProgram(self._program)
             self._draw_scene(picking=False)
+            projection, view, scale = self._scene_camera(self._snapshot)
+            self._flow_renderer.draw(self._snapshot,projection,view,scale,self.devicePixelRatioF())
             glBindVertexArray(0)
             glUseProgram(0)
         self._paint_frames += 1
@@ -530,7 +579,7 @@ class GpuHeartWidget(QOpenGLWidget):
             self._paint_frames = 0
             self._paint_sample_at = time.perf_counter()
 
-    def pick_part(self, x: float, y: float) -> HeartPartId | None:
+    def pick_part(self, x: float, y: float) -> AnatomicalElement | None:
         """Render semantic IDs into a single-sample framebuffer and read one pixel."""
 
         if not self.isValid() or self._snapshot is None:
@@ -579,7 +628,7 @@ class GpuHeartWidget(QOpenGLWidget):
         if values.size < 3:
             return None
         identifier = int(values[0]) | (int(values[1]) << 8) | (int(values[2]) << 16)
-        return self._part_by_pick_id.get(identifier)
+        return self._element_by_pick_id.get(identifier)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton:
@@ -636,6 +685,7 @@ class GpuHeartWidget(QOpenGLWidget):
                 glDeleteBuffers(1, [mesh.vertex_buffer])
                 glDeleteBuffers(1, [mesh.index_buffer])
                 glDeleteVertexArrays(1, [mesh.vao])
+            self._flow_renderer.dispose()
             self.doneCurrent()
         super().closeEvent(event)
 
@@ -652,6 +702,7 @@ class GpuHeartWidget(QOpenGLWidget):
                 source.view,
                 source.motion,
                 source.opacity,
+                source.element_key, source.deformation_center, source.valve_center, source.valve_radius,
             )
             grouped.setdefault(key, []).append(source)
 
@@ -711,6 +762,13 @@ class GpuHeartWidget(QOpenGLWidget):
                 source.view,
                 source.motion,
                 source.opacity,
+                source.element_key or source.part_id.value,
+                source.element_name,
+                np.asarray((source.deformation_center.x,source.deformation_center.y,source.deformation_center.z)
+                           if source.deformation_center else (vertices.min(axis=0)+vertices.max(axis=0))*.5,dtype=np.float32),
+                np.asarray((source.valve_center.x,source.valve_center.y,source.valve_center.z)
+                           if source.valve_center else (0,0,0),dtype=np.float32),
+                source.valve_radius,
             ))
         glBindVertexArray(0)
 
@@ -736,6 +794,8 @@ class GpuHeartWidget(QOpenGLWidget):
     def _scene_camera(self, snapshot: HeartSnapshot) -> tuple[np.ndarray, np.ndarray, float]:
         """Share the exact camera between drawing, picking, and label projection."""
         projection = _perspective(math.radians(34.0), self.width() / max(self.height(), 1), 0.1, 40.0)
+        # Reserve the inspector's reading area without recentering on selection.
+        projection[0,2] = 0.0 if snapshot.spatial_mode else 0.24
         view = _translation(0.0, -0.08, -7.0)
         # Selection never changes the camera or fragment transforms.
         aspect = self.width() / max(self.height(), 1)
@@ -749,13 +809,15 @@ class GpuHeartWidget(QOpenGLWidget):
         if snapshot is None or self._callout is None:
             return None
         candidates = [mesh for mesh in self._gpu_meshes
-                      if mesh.part_id == self._callout.identifier and visible_mesh(mesh, snapshot)]
+                      if mesh.part_id == self._callout.identifier and visible_mesh(mesh, snapshot)
+                      and (snapshot.selected_element is None or
+                           mesh.element_key == snapshot.selected_element.key)]
         if not candidates:
             return None
         # Access precomputed centers only; never scan vertices in the frame loop.
         mesh = max(candidates, key=lambda item: item.index_count)
         projection, view, scale = self._scene_camera(snapshot)
-        model = placement_matrix(snapshot, mesh.explosion, mesh.part_id, scale)
+        model = placement_matrix(snapshot, mesh.explosion, mesh.part_id, scale, mesh.element_key)
         clip = projection @ view @ model @ np.append(mesh.center, 1.0)
         if clip[3] <= 0:
             return None
@@ -771,14 +833,22 @@ class GpuHeartWidget(QOpenGLWidget):
         scale: float,
         picking: bool,
     ) -> None:
-        for mesh in sorted(self._gpu_meshes, key=lambda item: item.opacity < 1.0):
+        flowing = circulation_visible(snapshot)
+        def opacity_of(mesh):
+            if flowing and mesh.part_id in {HeartPartId.AORTA,HeartPartId.PULMONARY_ARTERY,
+                                            HeartPartId.VENA_CAVA,HeartPartId.PULMONARY_VEINS}:
+                return 0.25
+            return mesh.opacity
+        for mesh in sorted(self._gpu_meshes, key=lambda item: opacity_of(item) < 1.0):
             if not visible_mesh(mesh, snapshot):
                 continue
-            model = placement_matrix(snapshot, mesh.explosion, mesh.part_id, scale)
+            model = placement_matrix(snapshot, mesh.explosion, mesh.part_id, scale, mesh.element_key)
             glUniformMatrix4fv(self._uniforms["uModel"], 1, GL_TRUE, model)
             glUniform1f(self._uniforms["uIsTissue"], 1.0 if mesh.tissue else 0.0)
             contractile_group = 0.0
-            if mesh.part_id in {HeartPartId.RIGHT_ATRIUM, HeartPartId.LEFT_ATRIUM}:
+            if (mesh.part_id in {HeartPartId.RIGHT_ATRIUM, HeartPartId.LEFT_ATRIUM}
+                    or (mesh.part_id in {HeartPartId.EPICARDIUM,HeartPartId.ENDOCARDIUM}
+                        and mesh.element_key.endswith("atrium"))):
                 contractile_group = 1.0
             elif mesh.part_id in {
                 HeartPartId.RIGHT_VENTRICLE,
@@ -787,15 +857,23 @@ class GpuHeartWidget(QOpenGLWidget):
                 HeartPartId.PAPILLARY_MUSCLES,
                 HeartPartId.INTERVENTRICULAR_SEPTUM,
                 HeartPartId.ENDOCARDIUM,
+                HeartPartId.EPICARDIUM,
+                HeartPartId.CHORDAE_TENDINEAE,
             }:
                 contractile_group = 2.0
+            elif mesh.part_id in {HeartPartId.CORONARY_ARTERIES,HeartPartId.CORONARY_VEINS}:
+                contractile_group = 3.0
+            elif mesh.part_id == HeartPartId.CARDIAC_CONDUCTION and mesh.element_key in {
+                    "right_bundle","left_bundle","purkinje_lv","purkinje_rv"}:
+                contractile_group = 3.0
             glUniform1f(self._uniforms["uContractileGroup"], contractile_group)
-            opacity = mesh.opacity
+            opacity = opacity_of(mesh)
             glDepthMask(GL_TRUE if picking or opacity >= 1.0 else GL_FALSE)
             glUniform1f(self._uniforms["uOpacity"], 1.0 if picking else opacity)
             glUniform1f(
                 self._uniforms["uHighlighted"],
-                1.0 if snapshot.selected_part == mesh.part_id else 0.0,
+                float(snapshot.selected_part == mesh.part_id and
+                      (snapshot.selected_element is None or snapshot.selected_element.key == mesh.element_key)),
             )
             glUniform1f(self._uniforms["uAnalytical"], 0.0 if snapshot.realistic else 1.0)
             glUniform1f(self._uniforms["uCutaway"], 0.0)
@@ -805,22 +883,28 @@ class GpuHeartWidget(QOpenGLWidget):
             glUniform1f(self._uniforms["uSectionSurface"], float(section_surface))
             glUniform1f(self._uniforms["uConduction"], float(
                 snapshot.beating and mesh.part_id == HeartPartId.CARDIAC_CONDUCTION))
+            arrival = {"sa_node":.015,"atrial_conduction":.035,"bachmann":.04,
+                       "av_node":.085,"his_bundle":.125,"right_bundle":.14,
+                       "left_bundle":.14,"purkinje_rv":.165,"purkinje_lv":.165}.get(mesh.element_key,.02)
+            glUniform1f(self._uniforms["uConductionArrival"],arrival)
             glUniform1f(self._uniforms["uActivation"], self._activation(mesh.part_id, snapshot))
             color = mesh.realistic_color if snapshot.realistic else mesh.analysis_color
             glUniform3f(self._uniforms["uBaseColor"], *color)
             glUniform3f(self._uniforms["uMeshCenter"], *mesh.center)
-            valve_mode = {"none": 0.0, "atrioventricular": 1.0, "semilunar": 2.0}[mesh.motion]
-            valve_open = (snapshot.cycle.atrioventricular_valves_open if valve_mode == 1.0
-                          else snapshot.cycle.semilunar_valves_open)
+            glUniform3f(self._uniforms["uDeformCenter"], *mesh.deformation_center)
+            glUniform3f(self._uniforms["uValveCenter"], *mesh.valve_center)
+            valve_mode = {"none": 0.0, "atrioventricular": 1.0, "semilunar": 2.0,"chordal":3.0}[mesh.motion]
+            valve_open = (snapshot.cycle.atrioventricular_opening if valve_mode in (1.0,3.0)
+                          else snapshot.cycle.semilunar_opening)
             glUniform1f(self._uniforms["uValveMode"], valve_mode)
             glUniform1f(self._uniforms["uValveOpen"], float(valve_open))
-            radius = max(float(np.ptp(mesh.vertices[:, 0])) * 0.5, 0.01) if valve_mode else 1.0
+            radius = mesh.valve_radius if mesh.valve_radius else 1.0
             glUniform1f(self._uniforms["uValveRadius"], radius)
             roughness = 0.50 if mesh.tissue else 0.34
             sheen = 0.58 if mesh.tissue else 0.30
             glUniform1f(self._uniforms["uRoughness"], roughness)
             glUniform1f(self._uniforms["uSheen"], sheen)
-            pick_id = self._pick_id_by_part[mesh.part_id]
+            pick_id = self._pick_id_by_element[mesh.element_key]
             glUniform3f(
                 self._uniforms["uPickColor"],
                 (pick_id & 255) / 255.0,
@@ -859,8 +943,28 @@ class GpuHeartWidget(QOpenGLWidget):
         return 0.0
 
     def _paint_overlay(self, painter: QPainter) -> None:
-        if not self._hand_points and self._pointer is None and self._callout is None:
+        state = self._snapshot
+        if (not self._hand_points and self._pointer is None and self._callout is None
+                and not (state and state.flow_enabled)):
             return
+        if state and state.flow_enabled:
+            painter.save()
+            font = painter.font()
+            font.setFamily("Segoe UI")
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.setPen(QColor("#fa6864"))
+            painter.drawText(QPointF(22,28),"●  SANGRE CON MÁS O₂")
+            painter.setPen(QColor("#3db9fa"))
+            painter.drawText(QPointF(230,28),"●  SANGRE CON MENOS O₂")
+            painter.setPen(QColor("#a8bec9"))
+            message = "Derecho → pulmones · Izquierdo → cuerpo"
+            if not circulation_visible(state):
+                message = "Flujo en pausa · reconstruye el corazón para conectar el circuito"
+            elif not state.beating:
+                message = "Flujo en pausa · activa el latido"
+            painter.drawText(QPointF(22,50),message)
+            painter.restore()
         anchor = self._selected_anchor()
         if anchor is not None and self._inspector is not None and self._inspector.isVisible():
             card = QRectF(self._inspector.geometry())
@@ -876,6 +980,24 @@ class GpuHeartWidget(QOpenGLWidget):
                 painter.drawEllipse(anchor, 5.0, 5.0)
                 painter.setBrush(QColor("#20dcea"))
                 painter.drawEllipse(anchor, 1.8, 1.8)
+                painter.save()
+                font = painter.font()
+                font.setFamily("Segoe UI")
+                font.setPointSize(9)
+                painter.setFont(font)
+                text = QFontMetrics(font).elidedText(self._callout.display_name,
+                                                   Qt.TextElideMode.ElideRight,300)
+                width = QFontMetrics(font).horizontalAdvance(text)+22
+                x = anchor.x()+12
+                if x+width > card.left()-8:
+                    x = anchor.x()-width-12
+                label = QRectF(max(8,x),max(64,anchor.y()-36),width,26)
+                painter.setPen(QPen(QColor("#248c9a"),1))
+                painter.setBrush(QColor(2,12,20,236))
+                painter.drawRoundedRect(label,5,5)
+                painter.setPen(QColor("#c6f4f1"))
+                painter.drawText(label.adjusted(10,0,-10,0),Qt.AlignmentFlag.AlignVCenter,text)
+                painter.restore()
         pen = QPen(QColor("#16889a"), 1.2)
         painter.setPen(pen)
         connections = (

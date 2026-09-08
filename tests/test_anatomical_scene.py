@@ -64,9 +64,9 @@ class AnatomicalSceneTests(unittest.TestCase):
     def test_surface_and_section_are_mutually_exclusive(self):
         state = HeartController().snapshot()
         surfaces = [m for m in self.meshes if m.part_id == I.LEFT_VENTRICLE and m.view != "all"]
-        self.assertEqual(["exterior"],[m.view for m in surfaces if visible_mesh(m,state)])
+        self.assertEqual({"exterior"},{m.view for m in surfaces if visible_mesh(m,state)})
         state = replace(state,interior_view=True)
-        self.assertEqual(["interior"],[m.view for m in surfaces if visible_mesh(m,state)])
+        self.assertEqual({"interior"},{m.view for m in surfaces if visible_mesh(m,state)})
         state = replace(state,visible_systems=frozenset({AnatomySystem.GREAT_VESSELS}))
         self.assertFalse(any(visible_mesh(m,state) for m in surfaces))
 

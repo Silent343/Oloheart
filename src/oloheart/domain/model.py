@@ -111,6 +111,7 @@ class GestureKind(StrEnum):
     THREE_FINGERS = "Three_Fingers"
     PINKY = "Pinky"
     PINCH = "Pinch"
+    FLOW = "Index_Pinky"
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,13 +158,23 @@ class HandObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class AnatomicalElement:
+    """Identity of one manipulable structure, independent of its catalog category."""
+
+    part_id: HeartPartId
+    key: str
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentOffset:
-    """Normalized camera-space displacement for one exploded anatomical group."""
+    """Persistent model-space displacement of one explicitly acquired element."""
 
     part_id: HeartPartId
     horizontal: float
     vertical: float
     depth: float
+    element_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +189,26 @@ class CardiacCycleState:
     semilunar_valves_open: bool
     coronary_perfusion: float
     electrical_progress: float
+
+    @property
+    def atrioventricular_opening(self) -> float:
+        """Continuous leaflet excursion; AV valves close before ejection."""
+        if not self.atrioventricular_valves_open:
+            return 0.0
+        if 0.58 <= self.progress < 0.63:
+            return HeartExperience._smoothstep((self.progress - 0.58) / 0.05)
+        if 0.085 <= self.progress < 0.12:
+            return 1.0 - HeartExperience._smoothstep((self.progress - 0.085) / 0.035)
+        return 1.0
+
+    @property
+    def semilunar_opening(self) -> float:
+        """Semilunar cusps fold toward the vessel wall during ventricular ejection."""
+        if not self.semilunar_valves_open:
+            return 0.0
+        opening = HeartExperience._smoothstep((self.progress - 0.20) / 0.025)
+        closing = 1.0 - HeartExperience._smoothstep((self.progress - 0.455) / 0.025)
+        return min(opening, closing)
 
     @property
     def ventricular_emptying(self) -> float:
@@ -212,6 +243,10 @@ class HeartSnapshot:
     cycle: CardiacCycleState
     visible_systems: frozenset[AnatomySystem]
     interior_view: bool = False
+    selected_element: AnatomicalElement | None = None
+    grabbed_element: AnatomicalElement | None = None
+    flow_enabled: bool = False
+    flow_times: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 class HeartExperience:
@@ -226,18 +261,23 @@ class HeartExperience:
         self._zoom = self._target_zoom = 1.0
         self._explosion = self._target_explosion = 0.0
         self._selected_part: HeartPartId | None = None
+        self._selected_element: AnatomicalElement | None = None
         self._realistic = self._beating = False
         self._spatial_mode = False
         self._interior_view = False
-        self._fragment_offsets: dict[HeartPartId, tuple[float, float, float]] = {}
+        self._fragment_offsets: dict[tuple[HeartPartId, str], tuple[float, float, float]] = {}
         self._grabbed_fragment: HeartPartId | None = None
+        self._grabbed_element: AnatomicalElement | None = None
+        self._flow_enabled = False
+        self._flow_times = [0.0, 0.0, 0.0]
         self._bpm = 72
         self._beat_clock = 0.0
         self._visible_systems = set(AnatomySystem)
         self._visible_systems.discard(AnatomySystem.PERICARDIUM)
 
-    def select(self, part: HeartPartId) -> None:
+    def select(self, part: HeartPartId, element: AnatomicalElement | None = None) -> None:
         self._selected_part = part
+        self._selected_element = element
         self._visible_systems.add(anatomy_system_for(part))
         if part in {
             HeartPartId.INTERATRIAL_SEPTUM, HeartPartId.INTERVENTRICULAR_SEPTUM,
@@ -250,6 +290,7 @@ class HeartExperience:
 
     def focus_whole_heart(self) -> None:
         self._selected_part = None
+        self._selected_element = None
 
     def rotate_by(self, horizontal: float, vertical: float) -> None:
         self._target_rotation[1] += horizontal
@@ -266,14 +307,17 @@ class HeartExperience:
         if self._target_explosion < 0.5:
             self._fragment_offsets.clear()
             self._grabbed_fragment = None
+            self._grabbed_element = None
 
-    def begin_fragment_drag(self, part: HeartPartId) -> bool:
-        """Acquire a semantic anatomy group only while the exploded view is active."""
+    def begin_fragment_drag(self, part: HeartPartId, element: AnatomicalElement | None = None) -> bool:
+        """Acquire one picked element without moving adjacent category members."""
 
         if self._target_explosion < 0.5 or anatomy_system_for(part) not in self._visible_systems:
             return False
         self._grabbed_fragment = part
-        self._fragment_offsets.setdefault(part, (0.0, 0.0, 0.0))
+        self._grabbed_element = element
+        self._selected_part, self._selected_element = part, element
+        self._fragment_offsets.setdefault((part, element.key if element else ""), (0.0, 0.0, 0.0))
         return True
 
     def move_grabbed_fragment(self, horizontal: float, vertical: float, depth: float) -> bool:
@@ -281,8 +325,9 @@ class HeartExperience:
 
         if self._grabbed_fragment is None or self._target_explosion < 0.5:
             return False
-        current = self._fragment_offsets.get(self._grabbed_fragment, (0.0, 0.0, 0.0))
-        self._fragment_offsets[self._grabbed_fragment] = (
+        key = (self._grabbed_fragment, self._grabbed_element.key if self._grabbed_element else "")
+        current = self._fragment_offsets.get(key, (0.0, 0.0, 0.0))
+        self._fragment_offsets[key] = (
             self._clamp(current[0] + horizontal, -0.42, 0.42),
             self._clamp(current[1] + vertical, -0.42, 0.42),
             self._clamp(current[2] + depth, -0.50, 0.50),
@@ -291,6 +336,14 @@ class HeartExperience:
 
     def release_fragment(self) -> None:
         self._grabbed_fragment = None
+        self._grabbed_element = None
+
+    def toggle_blood_flow(self) -> None:
+        """Reveal the educational circulation through the anatomical section."""
+        self._flow_enabled = not self._flow_enabled
+        if self._flow_enabled:
+            self._interior_view = True
+            self._beating = self._realistic = True
 
     def toggle_realistic_heartbeat(self) -> None:
         self._realistic = not self._realistic
@@ -313,8 +366,10 @@ class HeartExperience:
             self._visible_systems.remove(system)
             if self._selected_part is not None and anatomy_system_for(self._selected_part) == system:
                 self._selected_part = None
+                self._selected_element = None
             if self._grabbed_fragment is not None and anatomy_system_for(self._grabbed_fragment) == system:
                 self._grabbed_fragment = None
+                self._grabbed_element = None
         else:
             self._visible_systems.add(system)
 
@@ -324,6 +379,9 @@ class HeartExperience:
         self._target_explosion = 0.0
         self._selected_part = None
         self._spatial_mode = False
+        self._selected_element = self._grabbed_element = None
+        self._flow_enabled = False
+        self._flow_times[:] = [0.0, 0.0, 0.0]
         self._interior_view = False
         self._fragment_offsets.clear()
         self._grabbed_fragment = None
@@ -338,18 +396,30 @@ class HeartExperience:
         self._zoom += (self._target_zoom - self._zoom) * smoothing
         self._explosion += (self._target_explosion - self._explosion) * smoothing
         if self._beating:
-            self._beat_clock = (self._beat_clock + delta * self._bpm / 60.0) % 1.0
+            # Small substeps avoid carrying flow across a closed-valve phase
+            # when a slow display frame straddles two phases of the cycle.
+            steps = max(1, math.ceil(delta * 240))
+            dt = delta / steps
+            for _ in range(steps):
+                self._beat_clock = (self._beat_clock + dt * self._bpm / 60.0) % 1.0
+                cycle = self._cycle_state()
+                for index, allowed in enumerate((True, cycle.atrioventricular_valves_open,
+                                                 cycle.semilunar_valves_open)):
+                    if allowed:
+                        self._flow_times[index] += dt
 
     def snapshot(self) -> HeartSnapshot:
         offsets = tuple(
-            FragmentOffset(part, *values)
-            for part, values in sorted(self._fragment_offsets.items(), key=lambda item: item[0].value)
+            FragmentOffset(part, *values, key)
+            for (part, key), values in sorted(self._fragment_offsets.items())
         )
         cycle = self._cycle_state()
         return HeartSnapshot(*self._rotation, self._zoom, self._explosion, self._selected_part,
                              self._realistic, self._beating, self._beat_scale(cycle), self._bpm,
                              self._spatial_mode, offsets, self._grabbed_fragment, cycle,
-                             frozenset(self._visible_systems), self._interior_view)
+                             frozenset(self._visible_systems), self._interior_view,
+                             self._selected_element, self._grabbed_element,
+                             self._flow_enabled, tuple(self._flow_times))
 
     def _beat_scale(self, cycle: CardiacCycleState) -> float:
         if not self._beating:

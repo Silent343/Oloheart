@@ -17,22 +17,23 @@ from oloheart.infrastructure.geometry import AnatomicalMesh, Vec3, _tube, _torus
 # Chamber centers, heights and contours intentionally differ across chambers.
 # The RV is anterior and crescent-like; the LV forms the inferior-left apex.
 CHAMBERS = {
-    I.RIGHT_VENTRICLE: (Vec3(-0.32, 0.43, 0.09), 1.43, (0.57, 0.48), 0.48, 0.10),
-    I.LEFT_VENTRICLE: (Vec3(0.32, 0.43, -0.04), 1.72, (0.55, 0.52), 0.12, 0.25),
-    I.RIGHT_ATRIUM: (Vec3(-0.43, 1.02, -0.11), 0.62, (0.43, 0.37), 0.06, 0.055),
-    I.LEFT_ATRIUM: (Vec3(0.32, 1.03, -0.23), 0.59, (0.40, 0.34), 0.0, 0.055),
+    I.RIGHT_VENTRICLE: (Vec3(-0.26, 0.43, 0.12), 1.42, (0.68, 0.48), 0.52, 0.12),
+    I.LEFT_VENTRICLE: (Vec3(0.23, 0.46, -0.06), 1.68, (0.67, 0.57), 0.30, 0.28),
+    I.RIGHT_ATRIUM: (Vec3(-0.48, 1.10, -0.18), 0.67, (0.44, 0.40), 0.08, 0.065),
+    I.LEFT_ATRIUM: (Vec3(0.38, 1.16, -0.33), 0.72, (0.41, 0.36), -0.015, 0.065),
 }
 VALVES = {
-    I.TRICUSPID_VALVE: (Vec3(-0.32, 0.40, 0.04), 0.225, 3, False),
-    I.MITRAL_VALVE: (Vec3(0.32, 0.42, -0.055), 0.215, 2, False),
-    I.AORTIC_VALVE: (Vec3(0.22, 0.63, -0.18), 0.135, 3, True),
-    I.PULMONARY_VALVE: (Vec3(-0.15, 0.65, 0.24), 0.135, 3, True),
+    I.TRICUSPID_VALVE: (Vec3(-0.40, 0.43, -0.01), 0.245, 3, False),
+    I.MITRAL_VALVE: (Vec3(0.365, 0.44, -0.09), 0.240, 2, False),
+    I.AORTIC_VALVE: (Vec3(0.075, 0.59, 0.005), 0.146, 3, True),
+    I.PULMONARY_VALVE: (Vec3(-0.19, 0.63, 0.31), 0.151, 3, True),
 }
 
 
 def _contour(t: float, kind: str) -> float:
     if kind == "atrium":
-        return 0.18 + 0.82 * math.sin(math.pi * t) ** 0.65
+        # A broad basal opening joins the AV junction; the atrial roof narrows.
+        return 0.20 + 0.44 * t + 0.62 * math.sin(math.pi * t) ** 0.70
     if kind == "sac":
         return (0.40 + 0.77 * math.sin(math.pi * t) ** 0.75) * (1.0 - 0.36 * t)
     return max(0.025, (1.0 - t) ** 0.53 * (0.70 + 0.48 * math.sin(math.pi * t)))
@@ -82,14 +83,20 @@ def _point(top: Vec3, height: float, radii: tuple[float, float], tilt: float,
                 radius = max(radius,(-b+math.sqrt(discriminant))/(2*a)+0.025)
         return Vec3(cx + nx*radius*(1-inset), y, 0.01+nz*radius*(1-inset))
     width = _contour(t, kind)
-    organic = 1.0 + 0.018 * math.sin(angle * 3 + t * 8) * math.sin(math.pi * t)
+    organic = 1.0 + 0.026 * math.sin(angle * 3 + t * 6) * math.sin(math.pi * t)
     x = math.cos(angle) * radii[0] * width * organic * (1.0 - inset)
     z = math.sin(angle) * radii[1] * width * organic * (1.0 - inset)
     # The RV wraps around the septal side rather than forming a second LV cone.
-    if kind == "rv" and x > 0:
-        x *= 0.66 + 0.16 * t
-    return Vec3(top.x + tilt * t + x, top.y - height * t,
-                top.z + z + 0.025 * math.sin(math.pi * t))
+    world_x = top.x + tilt * t + x
+    y = top.y - height * t
+    if kind in {"lv", "rv"}:
+        septum = 0.015 + 0.42 * max(0.0, (0.46-y)/1.68) ** 1.30
+        # Adjacent D-shaped cavities meet at a common septal wall. The RV
+        # terminates on the LV surface instead of creating a second free apex.
+        boundary = septum + (0.06 * inset if kind == "lv" else -0.06 * inset)
+        world_x = max(boundary, world_x) if kind == "lv" else min(boundary, world_x)
+    atrial_outlet = (0.17 if top.x < 0 else 0.24) * t if kind == "atrium" else 0.0
+    return Vec3(world_x, y, top.z + z + 0.025 * math.sin(math.pi * t) + atrial_outlet)
 
 
 def _shell(part: I, top: Vec3, height: float, radii: tuple[float, float],
@@ -97,7 +104,7 @@ def _shell(part: I, top: Vec3, height: float, radii: tuple[float, float],
            kind: str, section: bool, default: bool = True,
            opacity: float = 1.0) -> AnatomicalMesh:
     """Build outer and endocardial surfaces plus physical rims along the opening."""
-    rows, columns = 36, 64 if not section else 40
+    rows, columns = 48, 80 if not section else 48
     start, span = (0.0, math.tau) if not section else (math.pi, math.pi)
     vertices: list[Vec3] = []
     stride = columns + 1
