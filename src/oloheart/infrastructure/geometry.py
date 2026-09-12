@@ -54,6 +54,9 @@ class AnatomicalMesh:
     deformation_center: Vec3 | None = None
     valve_center: Vec3 | None = None
     valve_radius: float = 0.0
+    # Per-vertex leaflet opening displacement (xyz), attachment weight, and systolic support
+    # displacement (xyz). Empty for anatomy without subvalvular motion.
+    support_motion: tuple[tuple[float, ...], ...] = ()
 
 
 def _hex(value: str) -> tuple[int, int, int]:

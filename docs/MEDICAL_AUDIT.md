@@ -5,6 +5,25 @@ It is not a clinical validation and does not make OloHeart a medical device.
 
 ## September 2026 atlas revision
 
+### Subvalvular attachment correction, September 11
+
+Papillary muscles do not pull AV valves open. Valve opening is pressure-driven;
+papillary systolic tension restrains the leaflets against prolapse. The reference
+is [OpenStax, Heart Anatomy](https://openstax.org/books/anatomy-and-physiology-2e/pages/19-1-heart-anatomy).
+
+The renderer now separates papillary tension from ventricular emptying and AV
+opening. Chordal trees have tapered volumetric trunks, four terminal branches per
+fan, and flared insertions on the actual leaflet free margins. Per-vertex anchor
+attributes keep muscle tips, shared bifurcations and leaflet insertions coincident
+during the illustrative cycle. The same attributes are used by rendering and
+picking; anatomical elements still have independent drag identities.
+
+The intact ventricular envelope has a closed basal shoulder and apical pole.
+These surfaces are not shown in dissection, which retains hollow chamber walls.
+Tests check welded exterior topology and support attachment continuity. The
+camera-free `tests/verify_support.py` renders fixed diastolic/systolic comparisons.
+Slack and shortening remain visual approximations, not measured chordal mechanics.
+
 The active adapter now distinguishes 72 named elements within the existing 24
 catalog categories. A common ventricular exterior replaces two separate conical
 silhouettes. Exterior myocardial/epicardial layers follow that contour. The internal

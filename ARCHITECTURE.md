@@ -44,6 +44,14 @@
 
 ## Rendering model
 
+Subvalvular meshes optionally supply seven extra per-vertex attributes: the actual
+leaflet opening displacement, its attachment weight, and a systolic support displacement. Only
+these meshes allocate the extra GPU attributes. The shader reuses one leaflet
+excursion derived from the same membrane surface for valves and chordal endpoints. Papillary tension is a
+separate uniform from chamber emptying, allowing tension during isovolumetric
+contraction without moving the ventricular shell. Shared endpoints carry identical
+attributes; separate component keys preserve independent picking and dragging.
+
 The geometry adapter composes 24 categories and 72 named elements into paired exterior and
 interior surfaces. Matching meshes are consolidated into GPU batches. Only the
 active surface variant is rendered. The immutable mesh metadata records its view,

@@ -13,7 +13,7 @@ from dataclasses import replace
 from oloheart.domain.model import HeartPartId as I, build_anatomy_catalog
 from oloheart.infrastructure.geometry import AnatomicalMesh, Vec3, _tube, _torus, _ellipsoid
 from oloheart.infrastructure.sculpted_geometry import (
-    CHAMBERS, VALVES, _contour, _point, _shell, _hollow_vessel, _leaflets,
+    CHAMBERS, VALVES, _contour, _point, _shell, _hollow_vessel, _leaflets, av_leaflet_point, av_leaflet_open_point,
 )
 
 NAMES = {part.identifier: part.display_name for part in build_anatomy_catalog()}
@@ -91,8 +91,8 @@ def _envelope_point(t: float, angle: float) -> Vec3:
 def _ventricular_envelope() -> list[AnatomicalMesh]:
     """Partition one common surface into adjacent, independently selectable walls."""
     rows,columns = 64,96
-    vertices = tuple(_envelope_point(r/rows,c*math.tau/columns)
-                     for r in range(rows+1) for c in range(columns))
+    vertices = [_envelope_point(r/rows,c*math.tau/columns)
+                for r in range(rows+1) for c in range(columns)]
     groups = {I.LEFT_VENTRICLE:[],I.RIGHT_VENTRICLE:[]}
     for r in range(rows):
         for c in range(columns):
@@ -103,6 +103,34 @@ def _ventricular_envelope() -> list[AnatomicalMesh]:
             right = math.cos(angle) < .20*math.sin(angle)-.04 and r/rows < .88
             part = I.RIGHT_VENTRICLE if right else I.LEFT_VENTRICLE
             groups[part].extend(((a,d,b),(b,d,e)))
+    # Close the basal shoulder in intact views. The separate dissection meshes
+    # retain the actual cavity openings; this roof never fills their interiors.
+    previous = list(range(columns))
+    roof_center = Vec3(.025,.71,-.065)
+    for row in range(1,13):
+        weight = row/13
+        current = []
+        for c in range(columns):
+            rim = vertices[c]
+            p = rim*(1-weight)+roof_center*weight
+            current.append(len(vertices))
+            vertices.append(Vec3(p.x,.46+.25*math.sin(weight*math.pi/2),p.z))
+        for c in range(columns):
+            n = (c+1)%columns
+            angle = (c+.5)*math.tau/columns
+            part = I.RIGHT_VENTRICLE if math.cos(angle) < .20*math.sin(angle)-.04 else I.LEFT_VENTRICLE
+            groups[part].extend(((previous[c],previous[n],current[c]),(previous[n],current[n],current[c])))
+        previous = current
+    pole = len(vertices)
+    vertices.append(roof_center)
+    for c in range(columns):
+        angle = (c+.5)*math.tau/columns
+        part = I.RIGHT_VENTRICLE if math.cos(angle) < .20*math.sin(angle)-.04 else I.LEFT_VENTRICLE
+        groups[part].append((previous[c],previous[(c+1)%columns],pole))
+    apex = len(vertices)
+    vertices.append(Vec3(.53,-1.245,-.025))
+    for c in range(columns):
+        groups[I.LEFT_VENTRICLE].append((rows*columns+c,apex,rows*columns+(c+1)%columns))
     meshes = []
     for part,faces in groups.items():
         used = sorted({v for face in faces for v in face})
@@ -187,8 +215,20 @@ def _wall_details(part: I) -> list[AnatomicalMesh]:
     return meshes
 
 
+def _support_tube(part, points, radius, colors, explosion, sides=14, taper=.5):
+    """Rounded tissue/fibrous cable with closed ends, never a line primitive."""
+    mesh = _tube(part,points,radius,colors,explosion,sides,part == I.PAPILLARY_MUSCLES,
+                 False,taper=taper)
+    vertices,faces = list(mesh.vertices),list(mesh.faces)
+    for first,center in ((0,points[0]),(len(vertices)-sides,points[-1])):
+        pole = len(vertices)
+        vertices.append(center)
+        faces.extend((first+c,first+(c+1)%sides,pole) for c in range(sides))
+    return replace(mesh,vertices=tuple(vertices),faces=tuple(faces))
+
+
 def _subvalvular() -> list[AnatomicalMesh]:
-    """Separate each papillary muscle and each chordal fan; anchor both ends."""
+    """Branching volumetric chords share exact membrane and muscle anchors."""
     meshes = []
     for chamber, valve, muscle_names in (
         (I.LEFT_VENTRICLE,I.MITRAL_VALVE,("anterolateral","posteromedial")),
@@ -199,32 +239,72 @@ def _subvalvular() -> list[AnatomicalMesh]:
         side = "izquierdo" if kind == "lv" else "derecho"
         valve_center, radius, _, _ = VALVES[valve]
         for n, name in enumerate(muscle_names):
-            angle = math.pi * (1.17 + n * 0.63 / max(1,len(muscle_names)-1))
-            base = _point(top,height,radii,tilt,0.66,angle,kind,thickness-0.025)
+            angle = math.pi * ((1.64,1.90)[n] if kind == "lv" else (1.08,1.30,1.51)[n])
+            base = _point(top,height,radii,tilt,0.65,angle,kind,thickness*.15)
             tip = Vec3(valve_center.x + 0.15*math.cos(angle),
                        -0.10 - 0.055*(n % 2), valve_center.z - 0.11 + 0.08*n)
-            midpoint = base*0.48 + tip*0.52
-            muscle = _tube(I.PAPILLARY_MUSCLES,[base,midpoint,tip],0.064,
-                           LINING,EXPLOSION[chamber],20,True,False,curve_steps=12,taper=0.68)
+            shortening = (base-tip)*.065
+            points = [base*(1-t)+tip*t+Vec3(.012*math.sin(math.pi*t),0,-.012*math.sin(math.pi*t))
+                      for t in (k/28 for k in range(29))]
+            points[0],points[-1] = base,tip
+            muscle = _support_tube(I.PAPILLARY_MUSCLES,points,.095 if kind == "lv" else .078,
+                                   (LINING[0],"#b95d5b"),EXPLOSION[chamber],24,.73)
+            # Bury the closed foot and widen progressively through the wall,
+            # avoiding an exposed flat cone base against the endocardium.
+            vertices = list(muscle.vertices)
+            for k in range(29*24):
+                row = k//24
+                weight = min(1.0,(row/28)/.23)
+                factor = .06+.94*weight*weight*(3-2*weight)
+                vertices[k] = points[row]+(vertices[k]-points[row])*factor
+            muscle = replace(muscle,vertices=tuple(vertices))
+            data = []
+            for k in range(len(muscle.vertices)):
+                t = min(k//24,28)/28 if k < 29*24 else float(k == len(muscle.vertices)-1)
+                delta = shortening*(t*t*(3-2*t))
+                data.append((0,0,0,0,delta.x,delta.y,delta.z))
+            muscle = replace(muscle,support_motion=tuple(data),motion="papillary")
             key = f"papillary_{chamber.value}_{n}"
             meshes.append(_owned(muscle,key,f"Músculo papilar {name} · ventrículo {side}",VENTRICULAR_ORIGIN))
-            # Bifurcating thin cords attach along adjacent leaflet free edges.
-            # The endpoint metadata lets the shader follow leaflet excursion.
+            leaflet_count = VALVES[valve][2]
             for fan in range(3):
-                fork = tip*0.45 + Vec3(valve_center.x+(fan-1)*0.065,
-                                     valve_center.y-0.12,valve_center.z-0.03)*0.55
+                leaflet = (n+fan%2) % leaflet_count
+                # Insert on real free-margin points, not a fictitious inner ring.
+                parameters = [( .16+.38*n+.08*twig+.014*(fan-1) if kind == "lv"
+                               else .22+.15*twig+.024*(fan-1)) for twig in range(4)]
+                edges = [_tilt_valve(av_leaflet_point(valve_center,radius,leaflet_count,
+                          leaflet,u,1),valve_center) for u in parameters]
+                target = sum(edges[1:],edges[0])*.25
+                deltas = [_tilt_valve(av_leaflet_open_point(valve_center,radius,leaflet_count,
+                          leaflet,u,1),valve_center)-edge for u,edge in zip(parameters,edges)]
+                fork_delta = sum(deltas[1:],deltas[0])*(.25*.56)
+                fork = tip*.44+target*.56
                 cord_key = f"chordae_{chamber.value}_{n}_{fan}"
                 cord_name = f"Cuerdas tendinosas · {NAMES[valve].lower()} · fascículo {n*3+fan+1}"
-                paths = [[tip,fork]]
-                for twig in range(3):
-                    theta = math.tau*(n+fan*0.27+twig*0.10)/len(muscle_names)
-                    edge = Vec3(valve_center.x+radius*0.28*math.cos(theta),
-                                valve_center.y-0.022,valve_center.z+radius*0.28*math.sin(theta))
-                    paths.append([fork,_tilt_valve(edge,valve_center)])
-                for path in paths:
-                    cord = _tube(I.CHORDAE_TENDINEAE,path,0.0045,VALVULAR,
-                                 EXPLOSION[chamber],6,False,False)
-                    meshes.append(_owned(cord,cord_key,cord_name,VENTRICULAR_ORIGIN,motion="chordal",
+                segments = [(tip,fork,ZERO,fork_delta,0,.56,.009)]
+                segments += [(fork,edge,fork_delta,delta,.56,1,.0055) for edge,delta in zip(edges,deltas)]
+                for a,b,delta_a,delta_b,w0,w1,cord_radius in segments:
+                    points,data = [],[]
+                    for k in range(19):
+                        t = k/18
+                        bend = math.sin(math.pi*t) if 0 < k < 18 else 0.0
+                        slack = Vec3(.008*bend,-.011*bend,.005*bend)
+                        points.append(a*(1-t)+b*t+slack)
+                        opening = delta_a*(1-t)+delta_b*t
+                        weight = w0*(1-t)+w1*t
+                        delta = shortening*(1-weight)-slack
+                        data.extend([(opening.x,opening.y,opening.z,weight,delta.x,delta.y,delta.z)]*14)
+                    cord = _support_tube(I.CHORDAE_TENDINEAE,points,cord_radius,VALVULAR,
+                                         EXPLOSION[chamber],14,.37)
+                    # A small insertion fan blends the collagen cable into its leaflet.
+                    if w1 == 1:
+                        vertices = list(cord.vertices)
+                        for k in range(19*14):
+                            t = (k//14)/18
+                            vertices[k] = points[k//14]+(vertices[k]-points[k//14])*(1+1.5*t**10)
+                        cord = replace(cord,vertices=tuple(vertices))
+                    data.extend((data[0],data[-1]))
+                    meshes.append(_owned(replace(cord,support_motion=tuple(data)),cord_key,cord_name,VENTRICULAR_ORIGIN,motion="chordal",
                                          valve_center=valve_center,valve_radius=radius))
     return meshes
 
@@ -387,7 +467,11 @@ def build_cardiac_atlas() -> tuple[AnatomicalMesh, ...]:
         meshes.append(_owned(ring,part.value))
         leaf = _leaflets(part,center,radius,count,semilunar,EXPLOSION[part])
         if not semilunar:
-            leaf = replace(leaf,vertices=tuple(_tilt_valve(v,center) for v in leaf.vertices))
+            motion = []
+            for data in leaf.support_motion:
+                delta = _tilt_valve(Vec3(*data[:3]),ZERO)
+                motion.append((delta.x,delta.y,delta.z,*data[3:]))
+            leaf = replace(leaf,vertices=tuple(_tilt_valve(v,center) for v in leaf.vertices),support_motion=tuple(motion))
         meshes.append(_owned(replace(leaf,realistic_color=VALVULAR[1]),part.value,
                              valve_center=center,valve_radius=radius))
     meshes.extend(_subvalvular())

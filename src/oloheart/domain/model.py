@@ -580,7 +580,7 @@ def build_anatomy_catalog() -> tuple[HeartPart, ...]:
           (m("POSICIÓN", "Capa interna", "Superficie lisa"),)),
         p(i.PAPILLARY_MUSCLES, "Músculos papilares", "Musculi papillares", c.SUBVALVULAR_SYSTEM,
           "Proyecciones musculares cónicas dentro de ambos ventrículos.",
-          "Tensan las cuerdas tendinosas durante la sístole.",
+          "Tensan las cuerdas durante la sístole para evitar el prolapso de las valvas. No abren las válvulas: su apertura depende del gradiente de presión.",
           "Nacen de la pared ventricular y se conectan a las valvas auriculoventriculares.",
           (m("FUNCIÓN", "Estabilidad valvular", "Durante sístole"),)),
         p(i.CHORDAE_TENDINEAE, "Cuerdas tendinosas", "Chordae tendineae", c.SUBVALVULAR_SYSTEM,

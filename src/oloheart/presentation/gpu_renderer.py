@@ -96,12 +96,15 @@ VERTEX_SHADER = """
 #version 330 core
 layout(location = 0) in vec3 aPosition;
 layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec4 aLeafletMotion;
+layout(location = 3) in vec3 aSupportDisplacement;
 
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProjection;
 uniform float uAtrialContraction;
 uniform float uVentricularContraction;
+uniform float uPapillaryTension;
 uniform float uContractileGroup;
 uniform float uIsTissue;
 uniform vec3 uMeshCenter;
@@ -116,11 +119,7 @@ out vec3 vNormal;
 out vec3 vObjectPosition;
 out vec3 vObjectNormal;
 
-void main() {
-    vec3 position = aPosition;
-    vec3 objectNormal = aNormal;
-    float chordalAttachment = 0.0;
-    if (uValveMode > 0.5) {
+vec3 leafletPosition(vec3 position) {
         float tilt = uValveMode < 1.5 || uValveMode > 2.5 ? 0.48 : 0.0;
         float c = cos(tilt), s = sin(tilt);
         vec3 p = position-uValveCenter;
@@ -128,12 +127,27 @@ void main() {
         vec2 radial = p.xz;
         float radius = max(length(radial), 0.0001);
         float hinge = clamp(1.0 - radius / uValveRadius, 0.0, 1.0);
-        float attachment = uValveMode > 2.5
-            ? smoothstep(-0.44, -0.045, p.y) : 1.0;
-        chordalAttachment = uValveMode > 2.5 ? attachment : 0.0;
-        p.xz += radial / radius * hinge * uValveRadius * 0.86 * uValveOpen * attachment;
-        p.y -= hinge * uValveOpen * (uValveMode < 1.5 || uValveMode > 2.5 ? 0.14 : -0.10) * attachment;
-        position = uValveCenter+vec3(p.x,p.y*c-p.z*s,p.y*s+p.z*c);
+        p.xz += radial / radius * hinge * uValveRadius * 0.86 * uValveOpen;
+        p.y -= hinge * uValveOpen * (uValveMode < 1.5 || uValveMode > 2.5 ? 0.14 : -0.10);
+        return uValveCenter+vec3(p.x,p.y*c-p.z*s,p.y*s+p.z*c);
+}
+
+void main() {
+    vec3 position = aPosition;
+    vec3 objectNormal = aNormal;
+    float chordalAttachment = 0.0;
+    if (uValveMode > 0.5 && uValveMode < 1.5) {
+        position += aLeafletMotion.xyz*uValveOpen;
+    } else if (uValveMode > 1.5 && uValveMode < 2.5) {
+        position = leafletPosition(position);
+    } else if (uValveMode > 2.5 && uValveMode < 3.5) {
+        chordalAttachment = aLeafletMotion.w;
+        position += aLeafletMotion.xyz*uValveOpen;
+    }
+    if (uValveMode > 2.5) {
+        // Muscle shortening and removal of chordal slack follow systolic tension,
+        // not the opening of an AV valve. Shared endpoints have identical motion.
+        position += aSupportDisplacement*uPapillaryTension;
     }
     if ((uIsTissue > 0.5 || uValveMode > 2.5 || uContractileGroup > 2.5) && uContractileGroup > 0.5) {
         float contraction = uContractileGroup < 1.5
@@ -536,7 +550,7 @@ class GpuHeartWidget(QOpenGLWidget):
             "uBaseColor", "uCameraPosition", "uPickColor", "uRoughness",
             "uSheen", "uOpacity", "uHighlighted", "uAnalytical", "uPicking",
             "uCutaway", "uMeshCenter", "uActivation", "uCycleProgress",
-            "uValveMode", "uValveOpen", "uValveRadius",
+            "uValveMode", "uValveOpen", "uValveRadius", "uPapillaryTension",
             "uSectionSurface",
             "uConduction",
             "uDeformCenter", "uValveCenter", "uConductionArrival",
@@ -710,6 +724,8 @@ class GpuHeartWidget(QOpenGLWidget):
             source = sources[0]
             vertex_chunks: list[np.ndarray] = []
             normal_chunks: list[np.ndarray] = []
+            motion_chunks: list[np.ndarray] = []
+            has_support = any(component.support_motion for component in sources)
             index_chunks: list[np.ndarray] = []
             vertex_offset = 0
             for component in sources:
@@ -721,6 +737,11 @@ class GpuHeartWidget(QOpenGLWidget):
                     component.faces, dtype=np.uint32
                 )[:, (0, 2, 1)].copy()
                 vertex_chunks.append(component_vertices)
+                if has_support:
+                    data = np.asarray(component.support_motion,dtype=np.float32) if component.support_motion else np.zeros((len(component_vertices),7),dtype=np.float32)
+                    if data.shape != (len(component_vertices),7):
+                        raise ValueError(f"Invalid support attributes: {component.element_key}")
+                    motion_chunks.append(data)
                 normal_chunks.append(
                     _vertex_normals(component_vertices, component_faces.astype(np.int32))
                 )
@@ -728,7 +749,8 @@ class GpuHeartWidget(QOpenGLWidget):
                 vertex_offset += len(component_vertices)
             vertices = np.concatenate(vertex_chunks, axis=0)
             normals = np.concatenate(normal_chunks, axis=0)
-            interleaved = np.column_stack((vertices, normals)).astype(np.float32)
+            columns = (vertices,normals,np.concatenate(motion_chunks)) if has_support else (vertices,normals)
+            interleaved = np.column_stack(columns).astype(np.float32)
             indices = np.concatenate(index_chunks).astype(np.uint32, copy=False)
             vao = int(glGenVertexArrays(1))
             vertex_buffer = int(glGenBuffers(1))
@@ -738,13 +760,18 @@ class GpuHeartWidget(QOpenGLWidget):
             glBufferData(GL_ARRAY_BUFFER, interleaved.nbytes, interleaved, GL_STATIC_DRAW)
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer)
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices, GL_STATIC_DRAW)
-            stride = 6 * np.dtype(np.float32).itemsize
+            stride = (13 if has_support else 6) * np.dtype(np.float32).itemsize
             glEnableVertexAttribArray(0)
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
             glEnableVertexAttribArray(1)
             glVertexAttribPointer(
                 1, 3, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(3 * np.dtype(np.float32).itemsize)
             )
+            if has_support:
+                glEnableVertexAttribArray(2)
+                glVertexAttribPointer(2,4,GL_FLOAT,GL_FALSE,stride,ctypes.c_void_p(24))
+                glEnableVertexAttribArray(3)
+                glVertexAttribPointer(3,3,GL_FLOAT,GL_FALSE,stride,ctypes.c_void_p(40))
             self._gpu_meshes.append(_GpuMesh(
                 source.part_id,
                 vertices,
@@ -784,6 +811,7 @@ class GpuHeartWidget(QOpenGLWidget):
         glUniform3f(self._uniforms["uCameraPosition"], 0.0, 0.08, 7.0)
         glUniform1i(self._uniforms["uPicking"], 1 if picking else 0)
         glUniform1f(self._uniforms["uAtrialContraction"], snapshot.cycle.atrial_contraction)
+        glUniform1f(self._uniforms["uPapillaryTension"],snapshot.cycle.ventricular_contraction)
         glUniform1f(
             self._uniforms["uVentricularContraction"],
             snapshot.cycle.ventricular_emptying,
@@ -893,7 +921,7 @@ class GpuHeartWidget(QOpenGLWidget):
             glUniform3f(self._uniforms["uMeshCenter"], *mesh.center)
             glUniform3f(self._uniforms["uDeformCenter"], *mesh.deformation_center)
             glUniform3f(self._uniforms["uValveCenter"], *mesh.valve_center)
-            valve_mode = {"none": 0.0, "atrioventricular": 1.0, "semilunar": 2.0,"chordal":3.0}[mesh.motion]
+            valve_mode = {"none": 0.0, "atrioventricular": 1.0, "semilunar": 2.0,"chordal":3.0,"papillary":4.0}[mesh.motion]
             valve_open = (snapshot.cycle.atrioventricular_opening if valve_mode in (1.0,3.0)
                           else snapshot.cycle.semilunar_opening)
             glUniform1f(self._uniforms["uValveMode"], valve_mode)

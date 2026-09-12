@@ -136,17 +136,58 @@ def _shell(part: I, top: Vec3, height: float, radii: tuple[float, float],
                           "none", opacity)
 
 
+def av_leaflet_point(center: Vec3, radius: float, count: int, leaflet: int,
+                     u: float, v: float) -> Vec3:
+    """A scalloped leaflet spans its annular arc and a coapting free edge.
+
+    u follows the annular arc; v runs from the fixed hinge to the free margin.
+    Both the membrane and its chordal insertions consume this same surface.
+    """
+    start = math.pi / 2 + math.tau * leaflet / count
+    end = start + math.tau / count
+    angle = start + (end-start)*u
+    outer = Vec3(radius*math.cos(angle),0,radius*math.sin(angle))
+    a,b = Vec3(radius*math.cos(start),0,radius*math.sin(start)), Vec3(radius*math.cos(end),0,radius*math.sin(end))
+    if count == 2:
+        edge = a*(1-u)+b*u
+    elif u <= .5:
+        edge = a*(1-2*u)
+    else:
+        edge = b*(2*u-1)
+    p = outer*(1-v)+edge*v
+    p = p+outer.normalized()*(.0015*math.sin(math.pi*u)*v)
+    belly = -.026*math.sin(math.pi*v)*math.sin(math.pi*u)
+    margin = -.012*math.sin(math.pi*u)*v
+    return center+Vec3(p.x,belly+margin,p.z)
+
+
+def av_leaflet_open_point(center: Vec3, radius: float, count: int, leaflet: int,
+                          u: float, v: float) -> Vec3:
+    """Fold toward the leaflet's annular hinge without crossing the orifice."""
+    closed = av_leaflet_point(center,radius,count,leaflet,u,v)
+    hinge = av_leaflet_point(center,radius,count,leaflet,u,0)
+    opened = closed*(1-.90*v)+hinge*(.90*v)
+    return Vec3(opened.x,closed.y-.16*v*math.sin(math.pi*u),opened.z)
+
+
 def _leaflets(part: I, center: Vec3, radius: float, count: int,
               semilunar: bool, explosion: Vec3) -> AnatomicalMesh:
     """Create two mitral or three other cusps, with curved coapting surfaces."""
     vertices: list[Vec3] = []
     faces: list[tuple[int, int, int]] = []
-    radial_steps, angular_steps = 9, 18
+    motion = []
+    radial_steps, angular_steps = 16, 32
     for leaflet in range(count):
         base = len(vertices)
         for row in range(radial_steps + 1):
             r = 0.008 + (radius - 0.008) * row / radial_steps
             for column in range(angular_steps + 1):
+                if not semilunar:
+                    point = av_leaflet_point(center,radius,count,leaflet,column/angular_steps,row/radial_steps)
+                    delta = av_leaflet_open_point(center,radius,count,leaflet,column/angular_steps,row/radial_steps)-point
+                    vertices.append(point)
+                    motion.append((delta.x,delta.y,delta.z,0,0,0,0))
+                    continue
                 theta = math.tau * (leaflet + column / angular_steps) / count
                 belly = math.sin(math.pi * r / radius) * 0.045
                 vertices.append(Vec3(center.x + r * math.cos(theta),
@@ -159,7 +200,7 @@ def _leaflets(part: I, center: Vec3, radius: float, count: int,
                 faces.extend(((a, c, b), (b, c, d)))
     return AnatomicalMesh(part, tuple(vertices), tuple(faces), "#41bac2", "#e3b5a4",
                           explosion, False, False, "all",
-                          "semilunar" if semilunar else "atrioventricular")
+                          "semilunar" if semilunar else "atrioventricular",support_motion=tuple(motion))
 
 
 def _hollow_vessel(mesh: AnatomicalMesh) -> AnatomicalMesh:
