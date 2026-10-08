@@ -1,5 +1,11 @@
 # OloHeart
 
+> **Proprietary software — Copyright © 2026 Silent343. All rights reserved.**
+> Cloning and local execution are permitted only for personal, non-commercial
+> evaluation and educational demonstration. Redistribution, modification,
+> commercial use, and claiming the project as one's own are prohibited. See the
+> [OloHeart Proprietary Software License](LICENSE) and [ownership notice](NOTICE.md).
+
 OloHeart is a native Windows cardiac-anatomy workstation controlled with hands,
 mouse, or keyboard. It does not host a web page and it never displays the camera
 feed. The camera is used only to calculate hand landmarks in memory.
@@ -16,10 +22,28 @@ the toolbar, an empty-space click, or the thumb-up gesture.
 
 ## Start
 
-Run the one-time setup from PowerShell:
+Clone and start OloHeart from Command Prompt. The launcher creates the isolated
+Python environment and installs the dependencies automatically on its first run:
+
+```bat
+git clone https://github.com/Silent343/Oloheart.git
+cd Oloheart
+start-oloheart.cmd
+```
+
+Later runs use the same `start-oloheart.cmd` command and start immediately. Any
+application option can be appended to it, for example:
+
+```bat
+start-oloheart.cmd --windowed --no-camera
+```
+
+Python 3.12 or newer, Git, Windows, and an OpenGL-capable graphics adapter are
+required. The camera is optional when `--no-camera` is used.
+
+The equivalent one-time setup from PowerShell is:
 
 ```powershell
-cd C:\Users\Gabriel\Documents\OloHeart
 .\setup.ps1
 ```
 

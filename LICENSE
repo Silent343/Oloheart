@@ -1,0 +1,77 @@
+OLOHEART PROPRIETARY SOFTWARE LICENSE
+Version 1.0 — October 2026
+
+Copyright (c) 2026 Silent343. All rights reserved.
+
+OloHeart, including its original source code, documentation, anatomical data,
+interface designs, visual presentation, generated geometry, animations, and
+project-specific assets (collectively, the "Software"), is proprietary material.
+Ownership is not transferred by making the Software available in a repository or
+by allowing it to be downloaded, cloned, installed, or executed.
+
+1. Limited permission
+
+The copyright holder grants each individual a personal, revocable,
+non-exclusive, non-transferable license to clone and execute an unmodified copy
+of the Software solely for private evaluation, demonstration, and
+non-commercial educational use.
+
+2. Restrictions
+
+Except with prior written authorization from the copyright holder, no person or
+entity may:
+
+  a. copy the Software except for the limited installation copy permitted above;
+  b. modify, adapt, translate, reverse engineer, or create derivative works from
+     the Software;
+  c. publish, upload, mirror, redistribute, sublicense, rent, sell, or otherwise
+     provide the Software or any substantial part of it to another person;
+  d. use the Software, its source code, assets, or designs for commercial,
+     institutional, research, clinical, or revenue-generating purposes;
+  e. remove, hide, or alter copyright, authorship, attribution, trademark, or
+     proprietary notices;
+  f. represent the Software or a derivative of it as their own work; or
+  g. use the OloHeart name, visual identity, or branding in another product or
+     service.
+
+These restrictions apply to the maximum extent permitted by applicable law and
+do not override statutory rights that cannot legally be waived.
+
+Public availability of the repository does not place the Software in the public
+domain and does not make it open-source software. No implied license is granted.
+
+3. Contributions
+
+No ownership or usage rights arise merely from opening an issue, submitting a
+suggestion, or proposing a change. Contributions may be incorporated only under
+separate terms accepted in writing by the copyright holder.
+
+4. Third-party material
+
+Third-party libraries, tools, models, and other materials retain their respective
+copyrights and licenses. This license applies only to material for which the
+OloHeart copyright holder owns the relevant rights, and it does not replace or
+restrict any applicable third-party license.
+
+5. Medical limitation
+
+The Software is an educational visualization and is not a medical device. It
+must not be used for diagnosis, treatment, patient monitoring, or clinical
+decision-making.
+
+6. Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR
+A PARTICULAR PURPOSE, ACCURACY, AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT
+PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY CLAIM, DAMAGE,
+OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+7. Termination and permissions
+
+Any breach of these terms immediately terminates the limited permission granted
+above. Requests for modification, redistribution, institutional use, commercial
+licensing, or any other permission must be made directly to the owner of the
+official OloHeart repository:
+
+https://github.com/Silent343/Oloheart
