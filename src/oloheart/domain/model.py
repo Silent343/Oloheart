@@ -179,7 +179,7 @@ class FragmentOffset:
 
 @dataclass(frozen=True, slots=True)
 class CardiacCycleState:
-    """Educational phase schedule with pressure-compatible valve states."""
+    """Educational phase schedule with pressure-compatible valve states and biomechanics."""
 
     phase: CardiacPhase
     progress: float
@@ -192,27 +192,42 @@ class CardiacCycleState:
 
     @property
     def atrioventricular_opening(self) -> float:
-        """Continuous leaflet excursion; AV valves close before ejection."""
+        """Biphasic diastolic leaflet excursion (E-wave rapid filling + mid-diastolic drift + A-wave kick)."""
         if not self.atrioventricular_valves_open:
             return 0.0
-        if 0.58 <= self.progress < 0.63:
-            return HeartExperience._smoothstep((self.progress - 0.58) / 0.05)
-        if 0.085 <= self.progress < 0.12:
-            return 1.0 - HeartExperience._smoothstep((self.progress - 0.085) / 0.035)
+        p = self.progress
+        # Early rapid opening (E-wave onset)
+        if 0.58 <= p < 0.63:
+            return HeartExperience._smoothstep((p - 0.58) / 0.05)
+        # Peak E-wave into mid-diastolic partial float (diastasis)
+        if 0.63 <= p < 0.78:
+            return 1.0 - 0.16 * HeartExperience._smoothstep((p - 0.68) / 0.10)
+        # Diastasis plateau (remains >= 0.80 so orifice is patent)
+        if p >= 0.78:
+            return 0.84 - 0.04 * math.sin((p - 0.78) / 0.22 * math.pi)
+        # Atrial systole (A-wave secondary opening kick)
+        if p < 0.085:
+            a_kick = 0.16 * math.sin(min(1.0, p / 0.085) * math.pi)
+            return min(1.0, 0.84 + a_kick)
+        # Presystolic closure before isovolumetric contraction
+        if 0.085 <= p < 0.12:
+            return (1.0 - HeartExperience._smoothstep((p - 0.085) / 0.035)) * 0.88
         return 1.0
 
     @property
     def semilunar_opening(self) -> float:
-        """Semilunar cusps fold toward the vessel wall during ventricular ejection."""
+        """Semilunar cusps fold into the sinuses of Valsalva during ventricular ejection."""
         if not self.semilunar_valves_open:
             return 0.0
-        opening = HeartExperience._smoothstep((self.progress - 0.20) / 0.025)
-        closing = 1.0 - HeartExperience._smoothstep((self.progress - 0.455) / 0.025)
-        return min(opening, closing)
+        opening = HeartExperience._smoothstep((self.progress - 0.20) / 0.028)
+        closing = 1.0 - HeartExperience._smoothstep((self.progress - 0.445) / 0.035)
+        # Slight systolic Windkessel dome peak in early-mid ejection
+        ejection_curve = 0.92 + 0.08 * math.sin(max(0.0, min(1.0, (self.progress - 0.20) / 0.28)) * math.pi)
+        return min(opening, closing) * ejection_curve
 
     @property
     def ventricular_emptying(self) -> float:
-        """Hold chamber dimensions during both isovolumetric phases."""
+        """Hold chamber dimensions during both isovolumetric phases (Wiggers invariant)."""
         if self.phase == CardiacPhase.VENTRICULAR_EJECTION:
             t = (self.progress - 0.20) / 0.28
         elif self.phase == CardiacPhase.ISOVOLUMETRIC_RELAXATION:
@@ -223,6 +238,44 @@ class CardiacCycleState:
             return 0.0
         t = max(0.0, min(1.0, t))
         return t * t * (3.0 - 2.0 * t)
+
+    @property
+    def annular_descent(self) -> float:
+        """MAPSE/TAPSE: Longitudinal descent of the AV plane toward the stationary apex."""
+        if self.phase == CardiacPhase.ATRIAL_SYSTOLE:
+            # Slight upward pull of the AV ring during atrial contraction
+            return -0.22 * self.atrial_contraction
+        return self.ventricular_emptying
+
+    @property
+    def ventricular_torsion(self) -> float:
+        """Torrent-Guasp helical wringing twist (apex counterclockwise vs base clockwise) and untwisting."""
+        p = self.progress
+        if 0.12 <= p < 0.20:
+            # Pre-ejection torsional cocking during isovolumetric contraction
+            return 0.22 * HeartExperience._smoothstep((p - 0.12) / 0.08)
+        if 0.20 <= p < 0.48:
+            # Peak helical wringing during ventricular ejection
+            return 0.22 + 0.78 * HeartExperience._smoothstep((p - 0.20) / 0.25)
+        if 0.48 <= p < 0.58:
+            # Rapid untwisting during isovolumetric relaxation (generates diastolic suction!)
+            return 1.0 - 0.75 * HeartExperience._smoothstep((p - 0.48) / 0.10)
+        if 0.58 <= p < 0.74:
+            # Completion of diastolic recoil
+            return 0.25 * (1.0 - HeartExperience._smoothstep((p - 0.58) / 0.16))
+        return 0.0
+
+    @property
+    def wall_thickening(self) -> float:
+        """Radial inward endocardial & trabecular thickening by conservation of myocardial mass."""
+        return 0.82 * self.ventricular_emptying + 0.18 * self.ventricular_contraction
+
+    @property
+    def av_systolic_doming(self) -> float:
+        """Upward billowing/tenting of closed AV leaflets into the atria under ventricular systolic pressure."""
+        if self.atrioventricular_valves_open:
+            return 0.0
+        return self.ventricular_contraction
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,8 +449,6 @@ class HeartExperience:
         self._zoom += (self._target_zoom - self._zoom) * smoothing
         self._explosion += (self._target_explosion - self._explosion) * smoothing
         if self._beating:
-            # Small substeps avoid carrying flow across a closed-valve phase
-            # when a slow display frame straddles two phases of the cycle.
             steps = max(1, math.ceil(delta * 240))
             dt = delta / steps
             for _ in range(steps):
